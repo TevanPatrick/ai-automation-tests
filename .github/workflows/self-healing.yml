@@ -1,0 +1,102 @@
+name: Self-healing Playwright pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  planner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install
+      - name: Generate plan artifact
+        run: |
+          echo "Using planner prompt to generate a plan"
+          cp agents/planner.prompt.md planner-output.txt
+          echo "planner-output.txt" > planner-output-ref.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: planner-output
+          path: planner-output.txt
+
+  generator:
+    needs: planner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install
+      - name: Generate tests placeholder
+        env:
+          AI_CLI_COMMAND: ${{ secrets.AI_CLI_COMMAND }}
+        run: |
+          if [ -z "$AI_CLI_COMMAND" ]; then
+            echo "No AI_CLI_COMMAND configured; skipping generation placeholder."
+            echo "PLACEHOLDER" > generator-output.txt
+          else
+            eval "$AI_CLI_COMMAND --prompt-file agents/generator.prompt.md --input-file planner-output.txt > generator-output.txt"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: generator-output
+          path: generator-output.txt
+
+  executor:
+    needs: generator
+    runs-on: ubuntu-latest
+    outputs:
+      test-result: ${{ steps.playwright.outcome }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+      - id: playwright
+        name: Run Playwright tests
+        run: npx playwright test tests/saucedemo-ui
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report
+
+  healer:
+    needs: executor
+    if: ${{ needs.executor.outputs.test-result == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+      - name: Heal failing tests placeholder
+        env:
+          AI_CLI_COMMAND: ${{ secrets.AI_CLI_COMMAND }}
+        run: |
+          if [ -z "$AI_CLI_COMMAND" ]; then
+            echo "No AI_CLI_COMMAND configured; skipping healer placeholder."
+          else
+            eval "$AI_CLI_COMMAND --prompt-file agents/healer.prompt.md --input-file playwright-report > healer-output.txt"
+          fi
+      - name: Re-run Playwright tests
+        run: npx playwright test tests/saucedemo-ui
